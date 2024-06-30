@@ -226,3 +226,15 @@ void printMemoryBlocksStatus() {
         item = item->next;
     }
 }
+
+// ! POOL ALLOCATOR
+
+
+
+
+
+
+
+
+
+

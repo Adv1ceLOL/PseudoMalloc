@@ -3,14 +3,14 @@ CFLAGS = -Wall -Wextra -O2 -g
 
 all: malloc
 
-malloc: malloc.o smallAllocator.o bitMap.o linked_list.o
-	$(CC) $(CFLAGS) -o malloc malloc.o smallAllocator.o bitMap.o linked_list.o
+malloc: projectTest.o buddyAllocatorBitMap.o bitMap.o linked_list.o
+	$(CC) $(CFLAGS) -o malloc projectTest.o buddyAllocatorBitMap.o bitMap.o linked_list.o -lm
 
-malloc.o: malloc.c smallAllocator.h
-	$(CC) $(CFLAGS) -c malloc.c
+projectTest.o: projectTest.c buddyAllocatorBitMap.h
+	$(CC) $(CFLAGS) -c projectTest.c
 
-smallAllocator.o: smallAllocator.c smallAllocator.h bitMap.h
-	$(CC) $(CFLAGS) -c smallAllocator.c
+buddyAllocatorBitMap.o: buddyAllocatorBitMap.c buddyAllocatorBitMap.h bitMap.h
+	$(CC) $(CFLAGS) -c buddyAllocatorBitMap.c
 
 bitMap.o: bitMap.c bitMap.h
 	$(CC) $(CFLAGS) -c bitMap.c
