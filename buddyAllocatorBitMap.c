@@ -34,33 +34,60 @@ void BuddyAllocator_init(BuddyAllocator *alloc) {
     memset(alloc->memory, 0, alloc->memory_size);
     memset(alloc->bit_map_buffer, 0, bit_map_bytes);
 
+    // Inizializza la lista delle allocazioni grandi
+    alloc->large_allocations = NULL;
     printf("buddyAllocator: BuddyAllocator inizializza con %zu byte di memoria\n", alloc->memory_size);
 }
 
 // Prende un Buddy allocator e una grandezza. Returna il puntatore dell'inizio del blocco
 void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
-    // Calcoliamo il livello dell'allocatore per la richiesta "size"
-    int level = 0;
-    while ((MIN_BLOCK_SIZE << level) < (int)size) level++; // Il blocco piu piccolo possibile ma abbastanza grande
-    level = MAX_LEVELS - level - 1;
-
-    // Ora cerchiamo un blocco libero nel livello calcolato
-    for (int i = (1 << level) - 1; i < (1 << (level + 1)) - 1; i++) {
-        if (i >= BIT_MAP_SIZE) break; // Assicurati di non superare BIT_MAP_SIZE
-        int byte_num = i >> 3;
-        printf("buddyAllocator: Controllo BitMap a index %d, byte_num %d, buffer_size %d\n", i, byte_num, alloc->bit_map.buffer_size);
-        // Libero ? 
-        if (!BitMap_bit(&alloc->bit_map, i)) {
-            // Si? Segnamolo come occupato
-            BitMap_setBit(&alloc->bit_map, i, 1);
-            // Calcoliamo l'offset nel buffer (Indice blocco, dim blocchi al livello)
-            int offset = (i - ((1 << level) - 1)) * (1 << (MAX_LEVELS - level - 1)) * MIN_BLOCK_SIZE;
-            printf("buddyAllocator: Allocati %zu byte usando buddy allocator a %p (level: %d, index: %d)\n", size, &alloc->memory[offset], level, i);
-            return &alloc->memory[offset];
+    if (size >= SMALL_REQUEST_THRESHOLD) {
+        // Large request, usiamo mmap direttamente
+        void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if (ptr == MAP_FAILED) {
+            fprintf(stderr, "Failed to mmap large memory request of %zu bytes\n", size);
+            return NULL;
         }
+
+        // Aggiungi alla lista delle allocazioni grandi
+        LargeAllocation* new_allocation = (LargeAllocation*)mmap(NULL, sizeof(LargeAllocation), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if (new_allocation == MAP_FAILED) {
+            fprintf(stderr, "Failed to mmap memory for large allocation tracking\n");
+            munmap(ptr, size);
+            return NULL;
+        }
+        new_allocation->ptr = ptr;
+        new_allocation->size = size;
+        new_allocation->next = alloc->large_allocations;
+        alloc->large_allocations = new_allocation;
+
+        printf("Allocated %zu bytes using mmap at %p\n", size, ptr);
+        return ptr;
     }
-    fprintf(stderr, "buddyAllocator: Fallito allocare %zu byte usando buddy allocator\n", size);
-    return NULL;
+    else{
+        // Calcoliamo il livello dell'allocatore per la richiesta small "size" 
+        int level = 0;
+        while ((MIN_BLOCK_SIZE << level) < (int)size) level++; // Il blocco piu piccolo possibile ma abbastanza grande
+        level = MAX_LEVELS - level - 1;
+
+        // Ora cerchiamo un blocco libero nel livello calcolato
+        for (int i = (1 << level) - 1; i < (1 << (level + 1)) - 1; i++) {
+            if (i >= BIT_MAP_SIZE) break; // Assicurati di non superare BIT_MAP_SIZE
+            int byte_num = i >> 3;
+            printf("buddyAllocator: Controllo BitMap a index %d, byte_num %d, buffer_size %d\n", i, byte_num, alloc->bit_map.buffer_size);
+            // Libero ? 
+            if (!BitMap_bit(&alloc->bit_map, i)) {
+                // Si? Segnamolo come occupato
+                BitMap_setBit(&alloc->bit_map, i, 1);
+                // Calcoliamo l'offset nel buffer (Indice blocco, dim blocchi al livello)
+                int offset = (i - ((1 << level) - 1)) * (1 << (MAX_LEVELS - level - 1)) * MIN_BLOCK_SIZE;
+                printf("buddyAllocator: Allocati %zu byte usando buddy allocator a %p (level: %d, index: %d)\n", size, &alloc->memory[offset], level, i);
+                return &alloc->memory[offset];
+            }
+        }
+        fprintf(stderr, "buddyAllocator: Fallito allocare %zu byte usando buddy allocator\n", size);
+        return NULL;
+    }   
 }
 
 
@@ -96,7 +123,50 @@ void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
                 break;
             }
         }
-    } 
+    } else {
+        // Liberiamo la memoria allocata dalla mmap della Large request
+        LargeAllocation* current = alloc->large_allocations;
+        LargeAllocation* prev = NULL;
+        // Cerchiamo il puntatore da liberare nella lista delle LargeAllocations
+        while (current != NULL) {
+            // Se lo trova, libera la memoria e dalla lista
+            if (current->ptr == ptr) {
+                munmap(ptr, current->size);
+                printf("Freed memory allocated by mmap at %p\n", ptr);
+
+                // Rimuovi dalla lista
+                if (prev == NULL) {
+                    alloc->large_allocations = current->next;
+                } else {
+                    prev->next = current->next;
+                }
+                // Liberiamo lo spazio occupato dalla struttura LargeAllocation
+                munmap(current, sizeof(LargeAllocation)); 
+                return;
+            }
+            prev = current;
+            current = current->next;
+        }
+        fprintf(stderr, "Attempted to free an unknown pointer: %p\n", ptr);
+    }
+}
+
+void BuddyAllocator_destroy(BuddyAllocator *alloc) {
+    // Liberiamo la memoria occupata dal buddyAllocator
+    munmap(alloc->memory, alloc->memory_size);
+    // Liberiamo il buffer del BitMap
+    munmap(alloc->bit_map_buffer, BitMap_getBytes(BIT_MAP_SIZE));
+    printf("BuddyAllocator destroyed\n");
+
+    // Libera tutte le allocazioni grandi
+    /*
+    LargeAllocation* current = alloc->large_allocations;
+    while (current != NULL) {
+        LargeAllocation* next = current->next;
+        munmap(current->ptr, current->size);
+        munmap(current, sizeof(LargeAllocation)); 
+        current = next;
+    }*/
 }
 
 
