@@ -3,29 +3,50 @@
 
 #include "bitMap.h"
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <math.h>
+#include <unistd.h>
+#include <stdbool.h>
 
-#define PAGE_SIZE 4096 // Dimensione di una pagina
+#define BUDDY_LEVELS log2(MEMORY_SIZE / MIN_BLOCK_SIZE)
+
+#define PAGE_SIZE 4096 // Dimensione di una pagina di solito
 #define SMALL_REQUEST_THRESHOLD (PAGE_SIZE / 4) // 1/4 della dimensione di una pagina
-#define MAX_LEVELS 12
 #define BIT_MAP_SIZE (1 << (MAX_LEVELS + 1)) // Numero di bit richiesti
+#define MIN_BLOCK_SIZE 512 // Dimensione blocco all'ultimo livello
+#define MAX_LEVELS 12 // log2(MEMORY_SIZE / MIN_BLOCK_SIZE)
+#define MEMORY_SIZE 1024 * 1024 // 1 MB
+#define TOTAL_BLOCKS MEMORY_SIZE / MIN_BLOCK_SIZE // Numero di blocchi
 
-typedef struct LargeAllocation {
+typedef struct LargeAllocation { // Struct per le large allocations
     void* ptr;
     size_t size;
     struct LargeAllocation* next;
 } LargeAllocation;
 
 typedef struct {
-    char *memory; // Puntatore alla memoria
-    size_t memory_size; // Dimensione della memoria
-    BitMap bit_map;
-    uint8_t *bit_map_buffer; // Puntatore al buffer per il BitMap
+    char *memory; // Puntatore alla memoria del buddy
+    size_t memory_size; // Dimensione della memoria del buddy
+    int minBlock; // Dimensione minima del blocco
+    int levels; // livelli da fare
+    BitMap bit_map; // Punta alla bitMap
+    size_t bitMapSize; // Size dellla BitMap
+    char *bitMapBuffer; // Puntatore al buffer per il BitMap
+    int* blocks_per_level; // Tiene traccia dei blocchi per livello
     LargeAllocation* large_allocations; // Puntatore alla lista delle allocazioni grandi
-} BuddyAllocator;
+} BuddyAllocator;  
 
-void BuddyAllocator_init(BuddyAllocator *alloc);
+//! ---------------------------------------------------------------------------------------
+
+void BuddyAllocator_init(BuddyAllocator* alloc);
 void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size);
 void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr);
 void BuddyAllocator_destroy(BuddyAllocator *alloc);
 
+void Bitmap_print(BitMap *bitMap);
+
 #endif
+

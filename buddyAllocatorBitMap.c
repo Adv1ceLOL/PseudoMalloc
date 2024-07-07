@@ -1,128 +1,199 @@
 #include "buddyAllocatorBitMap.h"
-#include "bitMap.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
-#define MIN_BLOCK_SIZE 128
-#define MAX_LEVELS 12 // log2(MEMORY_SIZE / MIN_BLOCK_SIZE)
-#define SMALL_REQUEST_THRESHOLD (PAGE_SIZE / 4)
-#define PAGE_SIZE 4096
-
-void BuddyAllocator_init(BuddyAllocator *alloc) {
-    alloc->memory_size = 1 << 20; // 2^20 Byte == 1 MB
-    // Mappiamo la memoria del BuddyAllocator di 1 MB
-    alloc->memory = (char *)mmap(NULL, alloc->memory_size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (alloc->memory == MAP_FAILED) {
-        fprintf(stderr, "buddyAllocator: Fallita l'allocazione con mmap alla memoria\n");
-        exit(EXIT_FAILURE);
-    }
-    // Calcoliamo il # di byte necessari per il BitMap
-    int bit_map_bytes = BitMap_getBytes(BIT_MAP_SIZE);
-    // Il BitMap tiene conto dello stato dei blocchi
-    printf("buddyAllocator: BIT_MAP_SIZE: %d, bit_map_bytes: %d\n", BIT_MAP_SIZE, bit_map_bytes);
-    // Mappa la memoria per il buffer del BitMap
-    alloc->bit_map_buffer = (uint8_t *)mmap(NULL, bit_map_bytes, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (alloc->bit_map_buffer == MAP_FAILED) {
-        fprintf(stderr, "buddyAllocator: Fallita l'allocazione con mmap al buffer\n");
-        exit(EXIT_FAILURE);
-    }
-    // Inizializza il BitMap
-    BitMap_init(&alloc->bit_map, BIT_MAP_SIZE, alloc->bit_map_buffer);
-    memset(alloc->memory, 0, alloc->memory_size);
-    memset(alloc->bit_map_buffer, 0, bit_map_bytes);
-
-    // Inizializza la lista delle allocazioni grandi
-    alloc->large_allocations = NULL;
-    printf("buddyAllocator: BuddyAllocator inizializza con %zu byte di memoria\n", alloc->memory_size);
+// Mettiamo i blocchi ad 1 per i parenti del blocco 
+void bitSetParent(BitMap *bit_map, int bit_num, int LiberoOccupato){
+    // Settiamo il blocco a occupato
+    BitMap_setBit(bit_map, bit_num, LiberoOccupato);
+    // Se bit_num non è il blocco a livello 0, continua a salire
+    if (bit_num != 0) bitSetParent(bit_map, (bit_num - 1) / 2 , LiberoOccupato); 
 }
+
+// Mettiamo i blocchi ad 1 per i figli del blocco 
+void bitSetFiglio(BitMap *bit_map, int bit_num, int LiberoOccupato){
+    // Non voglioamo uscire dalla BitMap
+    if (bit_num < bit_map->num_bits){ 
+        BitMap_setBit(bit_map, bit_num, LiberoOccupato); // Settiamo il blocco a occupato
+        bitSetFiglio(bit_map, bit_num * 2 + 1, LiberoOccupato);  // Figlio di sinistra
+        bitSetFiglio(bit_map, bit_num * 2 + 2, LiberoOccupato);  // Figlio di destra
+    }
+}
+  /*        /
+         padre
+         /   \
+       sx     dx
+       /\     /\
+*/
+
+void BuddyAllocator_init(BuddyAllocator* alloc) {
+    // Inizializziamo tutti i dati necessari per il buddy allocator (nella struct)
+    char bufferAllocator[MEMORY_SIZE]; 
+    char bufferBitMap[MEMORY_SIZE];
+
+    int levels = BUDDY_LEVELS;    
+    int minBlock = MEMORY_SIZE >> (levels); // (MEMORY_SIZE) / (2^levels)
+
+    alloc->levels=levels;
+    alloc->memory = bufferAllocator;
+    alloc->memory_size = MEMORY_SIZE;
+    alloc->minBlock=minBlock;
+    alloc->bitMapBuffer = bufferBitMap;
+    alloc->bitMapSize = MEMORY_SIZE;
+
+    // Generazione del numero di bit necessari per la bit_map con tot livelli
+    int num_bits = (1 << (levels + 1)) - 1 ;  
+
+    // Creamo una BitMap con il nostro buddy allocator
+    BitMap_init(&alloc->bit_map, num_bits, alloc->bitMapBuffer);
+
+    //Bitmap_print(&alloc->bit_map); 
+
+    // Inizializziamo il gestore delle allocazioni >= di 1/4 page_size
+    alloc->large_allocations = NULL;
+    
+    return;
+}
+
 
 // Prende un Buddy allocator e una grandezza. Returna il puntatore dell'inizio del blocco
 void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
+    printf("BuddyAllocator_malloc: Richiesta di %zu byte\n", size);
+    if (size >= (alloc->memory_size)) { // Controlli non si sa mai
+        printf("ERRORE: Non abbastanza spazio per gestire questa richesta \n");
+        return NULL;
+    }
+    if (size == 0)return NULL;
     if (size >= SMALL_REQUEST_THRESHOLD) {
         // Large request, usiamo mmap direttamente
         void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
         if (ptr == MAP_FAILED) {
-            fprintf(stderr, "Failed to mmap large memory request of %zu bytes\n", size);
+            printf("ERRORE: mmap di %zu bytes\n", size);
             return NULL;
         }
 
         // Aggiungi alla lista delle allocazioni grandi
         LargeAllocation* new_allocation = (LargeAllocation*)mmap(NULL, sizeof(LargeAllocation), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
         if (new_allocation == MAP_FAILED) {
-            fprintf(stderr, "Failed to mmap memory for large allocation tracking\n");
-            munmap(ptr, size);
+            printf("ERRORE: mmap memory per il LargeAllocation struct \n");
+            munmap(ptr, size); // Liberiamo la memoria precedentemente mappata per evitare problemi
             return NULL;
         }
+        // Aggiungiamo i dati nella nostra struct 
         new_allocation->ptr = ptr;
         new_allocation->size = size;
         new_allocation->next = alloc->large_allocations;
         alloc->large_allocations = new_allocation;
 
-        printf("Allocated %zu bytes using mmap at %p\n", size, ptr);
+        printf("Allocati %zu bytes usando mmap in %p\n", size, ptr);
         return ptr;
     }
-    else{
-        // Calcoliamo il livello dell'allocatore per la richiesta small "size" 
-        int level = 0;
-        while ((MIN_BLOCK_SIZE << level) < (int)size) level++; // Il blocco piu piccolo possibile ma abbastanza grande
-        level = MAX_LEVELS - level - 1;
-
-        // Ora cerchiamo un blocco libero nel livello calcolato
-        for (int i = (1 << level) - 1; i < (1 << (level + 1)) - 1; i++) {
-            if (i >= BIT_MAP_SIZE) break; // Assicurati di non superare BIT_MAP_SIZE
-            int byte_num = i >> 3;
-            printf("buddyAllocator: Controllo BitMap a index %d, byte_num %d, buffer_size %d\n", i, byte_num, alloc->bit_map.buffer_size);
-            // Libero ? 
-            if (!BitMap_bit(&alloc->bit_map, i)) {
-                // Si? Segnamolo come occupato
-                BitMap_setBit(&alloc->bit_map, i, 1);
-                // Calcoliamo l'offset nel buffer (Indice blocco, dim blocchi al livello)
-                int offset = (i - ((1 << level) - 1)) * (1 << (MAX_LEVELS - level - 1)) * MIN_BLOCK_SIZE;
-                printf("buddyAllocator: Allocati %zu byte usando buddy allocator a %p (level: %d, index: %d)\n", size, &alloc->memory[offset], level, i);
-                return &alloc->memory[offset];
+    else {
+        // Necessitiamo di un metodo per capire il livello incui bisonga occupare blocchi
+        int level = alloc->levels; // Livello che cerchiamo
+        int dimBlockLivello; // Spazio disponibile nel livello
+        
+        if (size > (alloc->memory_size) / 2) dimBlockLivello = alloc->memory_size;    
+        else{    // PArtiamo dal livello piu basso e andiamo salendo
+            dimBlockLivello = alloc->minBlock;
+            // Possiamo fare cosi perche sappiamo la dimensione dei blocchi ad ogni livello
+            while (dimBlockLivello < (int) size) {  // Continua finche non troviamo un blocco abbastanza grande per contenere l'allocazione
+                dimBlockLivello *= 2;  // Al livello successivo avremo il doppio della dimensione del blocco precedente
+                level--;  // Saliamo di livello
             }
         }
-        fprintf(stderr, "buddyAllocator: Fallito allocare %zu byte usando buddy allocator\n", size);
-        return NULL;
-    }   
+
+        printf("Livello: %d \n", level);
+
+        // Troviamo un blocco libero nel livello scelto
+        int bloccoLibero;  
+        int trovato = 0; // Controlliamo se lo abbiamo trovato o meno alla fine dei cicli
+
+        if (level == 0){ // Se stiamo a livello 0 (caso apparte)
+            if (!BitMap_bit(&alloc->bit_map, (1 << level) - 1)){ // Controlliamo se è libero l'unico blocco
+                bloccoLibero = 0; 
+                trovato = 1;
+            }
+        }
+        else{ 
+            // Andiamo dal primo index ((1 << level) - 1) fino all'ultimo che sara il primo del livello successivo (non incluso)
+            for(int j = (1 << level) - 1; j < (1 << (level + 1)) - 1; j++){
+                if (j >= BIT_MAP_SIZE){ // Controlliamo di non superare il limite
+                    printf("Superata la BITMAP SIZE\n");
+                    break;
+                } 
+                // Se libero il blocco, lo abbiamo trovato, senno si continua a cercare
+                if (!BitMap_bit(&alloc->bit_map, j)){ 
+                    bloccoLibero=j; 
+                    trovato = 1;
+                    printf("Blocco Libero: %d \n", bloccoLibero);
+                    break;
+                }
+            } 
+        }
+
+        if(!trovato){  
+            printf("Nessun blocco libero trovato \n");
+            return NULL;
+        }
+
+        // Avendo trovato il blocco, siccome è un albero, bisogna occupare anche tutti i blocchi imparentati, perche saranno occupati anche loro
+        bitSetParent(&alloc->bit_map, bloccoLibero, 1);
+        bitSetFiglio(&alloc->bit_map, bloccoLibero, 1);
+
+        // Calcoliamo l'indirizzo del blocco che vogliamo occupare (indirizzo base + indirizzo blocco trovato - offset del bloccoLibero * dimensione del blocco al livello)
+                                                                                                                                     // ^ Perche cosi otteniamo l'offset in byte dall'inizio dell'area di memoria                             
+        char *indirizzo = alloc->memory + (bloccoLibero - ((1 << (int)floor(log2(bloccoLibero+1))) - 1)) * dimBlockLivello;
+        // Per il malloc è inutile, ma siccome dovremmo liberare il blocco in tot indice eventualmente, va messo da parte che indice andra liberato
+        ((int *)indirizzo)[0] = bloccoLibero; 
+        printf("Indice = %d , Puntatore returnato = %p \n", bloccoLibero, indirizzo);
+        printf("Dimensione Blocco = %d , Dimensione effettivamente allocata = %zu \n",dimBlockLivello, size);
+        Bitmap_print(&alloc->bit_map); // Controlliamo se è fatto bene o meno
+        return (void *)(indirizzo + sizeof(int)); // Bisogna lasciare spazio per l'indice di 4 bit senno i blocchi liberati possono essere errati
+    }
 }
-
-
 
 
 void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
     if (ptr == NULL) return;
-    
+    printf("BuddyAllocator_free: Richiesta di liberare %p \n", ptr);
     // Controllo del puntatore: Si trova all'interno della zona di memoria del buddy allocator
     if (ptr >= (void*)alloc->memory && ptr < (void*)(alloc->memory + alloc->memory_size)) {
-        // Offset del ptr all'inizio dell'area di memoria
-        int offset = (char*)ptr - alloc->memory;
-        // Uso l'offset per calcolare l'indice del BitMap (blocco)
-        int index = offset / MIN_BLOCK_SIZE + (1 << MAX_LEVELS) - 1;
+        // Recuperiamo l'indice del blocco memorizzato prima dell'indirizzo (quello fatto prima per il free nel malloc)
+        int libero = ((int *)ptr)[-1];
 
-        // Controlla il caso incui l'index suepera il BIT_MAP_SIZE
-        if (index >= BIT_MAP_SIZE) return;
+        // Liberiamo tutti i figli sotto di lui (indice)
+        bitSetFiglio(&alloc->bit_map, libero, 0);
+        
+        // Facciamo il Merge se serve
+        while (libero != 0) { // Bisogna fare il ciclo finche non arriviamo al primo blocco (livello 0)
+            int index; // Calcoliamo l'indice del buddy
+            if (libero == 0)index = 0; // Se il blocco è libero, allora i due blocchi possono essere uniti
+            // Il primo blocco dei due buddys è pari, secondo è dispari
+            else if (libero % 2) index = libero + 1; // Se libero è pari: l'index del buddy sara libero - 1
+            else index = libero - 1; // Se libero è dispari: l'index del buddy sara libero + 1
 
-        // Setta il bit a 0 ==> stato blocco a libero
-        BitMap_setBit(&alloc->bit_map, index, 0);
-        printf("buddyAllocator: Liberata memoria gestita dal buddy allocator a %p (index: %d)\n", ptr, index);
+              /*        /
+                    padre
+           2*i + 1 /   \ 2*i + 2
+                sx     dx
+                /\     /\
+            */
 
-        // Una volta liberato il blocco, vanno riuniti i blocchi se necessario
-        while (index > 0) {
-            // Calcolo l'indice del buddyAllocator
-            int buddy = (index % 2 == 0) ? index - 1 : index + 1;
-            if (buddy >= BIT_MAP_SIZE) break;
-            // Libero ? Uniscili
-            if (!BitMap_bit(&alloc->bit_map, buddy)) {
-                BitMap_setBit(&alloc->bit_map, buddy, 0);
-                index = (index - 1) / 2;
+            printf("Buddy = %d , index = %d \t", libero, index);
+            // 
+            if (!BitMap_bit(&alloc->bit_map, index)) { // Se è libero ? 
+                printf("Merge\n");
+                int parentIndex = (libero - 1) / 2; // Indice del genitore preso dal index di sinistra
+                BitMap_setBit(&alloc->bit_map, parentIndex, 0); // Libera il blocco del padre operando il merge
+                libero = parentIndex; // Va a controllare il prossimo livello per il merge continuando il ciclo
             } else {
-                break;
+                // Non è disponibile il merge per questo livello quindi fermiamo il ciclo
+                printf("Niente Merge\n");
+                break; 
             }
         }
+
+        Bitmap_print(&(alloc->bit_map));
+        
     } else {
         // Liberiamo la memoria allocata dalla mmap della Large request
         LargeAllocation* current = alloc->large_allocations;
@@ -147,27 +218,52 @@ void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
             prev = current;
             current = current->next;
         }
-        fprintf(stderr, "Attempted to free an unknown pointer: %p\n", ptr);
+        printf("Provato a liberare un puntatore sconosciuto: %p\n", ptr);
+        return;
     }
 }
 
 void BuddyAllocator_destroy(BuddyAllocator *alloc) {
-    // Liberiamo la memoria occupata dal buddyAllocator
-    munmap(alloc->memory, alloc->memory_size);
-    // Liberiamo il buffer del BitMap
-    munmap(alloc->bit_map_buffer, BitMap_getBytes(BIT_MAP_SIZE));
-    printf("BuddyAllocator destroyed\n");
-
     // Libera tutte le allocazioni grandi
-    /*
     LargeAllocation* current = alloc->large_allocations;
     while (current != NULL) {
         LargeAllocation* next = current->next;
         munmap(current->ptr, current->size);
         munmap(current, sizeof(LargeAllocation)); 
         current = next;
-    }*/
+    } 
+
+    // Svuotiamo la struct
+    alloc->levels = 0;
+    alloc->memory = NULL;
+    alloc->memory_size = 0;
+    alloc->minBlock = 0;
+    alloc->bitMapBuffer = NULL;
+    alloc->bitMapSize = 0;
+    alloc->large_allocations = NULL;
+
+    printf("BuddyAllocator destroyed\n");
 }
 
+void Bitmap_print(BitMap *bit_map){
+    // Settiamo le variabili che ci servono
+    int restanoQuanti = 0; // Fa da cursore per sapere dove sto e quanto manca
+    int livello = -1; // Tiene traccia del livello dove mi trovo
+    int fine = floor(log2(bit_map->num_bits + 1))- 1; // Calcola il livello finale ( piu profondo )
 
+    // Iteriamo su ogni bit della BitMap per stamparli
+    for (int i = 0; i < bit_map->num_bits; i++){  
+        if (restanoQuanti == 0){ // Finito la print di questo livello, passiamo al successivo
+            if(livello == fine) break; // Finita l'intera stampa
+            livello++;
+            printf("\n Livello %d: \t", livello);
+            restanoQuanti = 1 << livello; // Aumentiamo la variabile del cursore perche sappiamo quanti bit avremo al prossimo livello ( 2 ^ livello )
+        }
+        if (BitMap_bit(bit_map, i)==0) printf("%d ", BitMap_bit(bit_map, i)); // Se il blocco è libero, lo stampa normale in bianco
+        else printf("\x1b[36m%d\x1b[0m ", BitMap_bit(bit_map, i)); // Se è occupato, per contrasto lo cambiamo di colore a ciano
+        
+        restanoQuanti--;  // Muoviamo il cursore
+    }
+    printf("\n");
+};
 
