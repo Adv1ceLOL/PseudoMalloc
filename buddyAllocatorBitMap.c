@@ -90,15 +90,13 @@ void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
         // Necessitiamo di un metodo per capire il livello incui bisonga occupare blocchi
         int level = alloc->levels; // Livello che cerchiamo
         int dimBlockLivello; // Spazio disponibile nel livello
-        
-        if (size > (alloc->memory_size) / 2) dimBlockLivello = alloc->memory_size;    
-        else{    // PArtiamo dal livello piu basso e andiamo salendo
-            dimBlockLivello = alloc->minBlock;
-            // Possiamo fare cosi perche sappiamo la dimensione dei blocchi ad ogni livello
-            while (dimBlockLivello < (int) size) {  // Continua finche non troviamo un blocco abbastanza grande per contenere l'allocazione
-                dimBlockLivello *= 2;  // Al livello successivo avremo il doppio della dimensione del blocco precedente
-                level--;  // Saliamo di livello
-            }
+         
+        // PArtiamo dal livello piu basso e andiamo salendo
+        dimBlockLivello = alloc->minBlock;
+        // Possiamo fare cosi perche sappiamo la dimensione dei blocchi ad ogni livello
+        while (dimBlockLivello < (int) size) {  // Continua finche non troviamo un blocco abbastanza grande per contenere l'allocazione
+            dimBlockLivello *= 2;  // Al livello successivo avremo il doppio della dimensione del blocco precedente
+            level--;  // Saliamo di livello
         }
 
         printf("Livello: %d \n", level);
@@ -143,7 +141,7 @@ void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
                                                                                                                                      // ^ Perche cosi otteniamo l'offset in byte dall'inizio dell'area di memoria                             
         char *indirizzo = alloc->memory + (bloccoLibero - ((1 << (int)floor(log2(bloccoLibero+1))) - 1)) * dimBlockLivello;
         // Per il malloc è inutile, ma siccome dovremmo liberare il blocco in tot indice eventualmente, va messo da parte che indice andra liberato
-        ((int *)indirizzo)[0] = bloccoLibero; 
+        ((int *)indirizzo)[0] = bloccoLibero;
         printf("Indice = %d , Puntatore returnato = %p \n", bloccoLibero, indirizzo);
         printf("Dimensione Blocco = %d , Dimensione effettivamente allocata = %zu \n",dimBlockLivello, size);
         Bitmap_print(&alloc->bit_map); // Controlliamo se è fatto bene o meno
@@ -178,7 +176,7 @@ void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
                 /\     /\
             */
 
-            printf("Buddy = %d , index = %d \t", libero, index);
+            printf("Buddy = %d , index = %d \t",index, libero);
             // 
             if (!BitMap_bit(&alloc->bit_map, index)) { // Se è libero ? 
                 printf("Merge\n");
@@ -203,7 +201,7 @@ void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
             // Se lo trova, libera la memoria e dalla lista
             if (current->ptr == ptr) {
                 munmap(ptr, current->size);
-                printf("Freed memory allocated by mmap at %p\n", ptr);
+                printf("Liberata memoria allocata da mmap in %p\n", ptr);
 
                 // Rimuovi dalla lista
                 if (prev == NULL) {
