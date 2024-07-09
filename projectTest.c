@@ -87,14 +87,24 @@ int main() {
     BuddyAllocator_free(&alloc, ptr2);
     printf("Liberati 1019 B da %p\n", ptr2);
 
-    // Libera large allocation
-    BuddyAllocator_free(&alloc, ptr3);
-    printf("Liberati 90KB da %p\n", ptr3);
+    // Libera small allocation
+    printf("Tentativo di double free 1\n");
+    BuddyAllocator_free(&alloc, ptr2);
+    printf("Liberati 1023 B da %p\n", ptr2); 
 
     // Libera large allocation
-    BuddyAllocator_free(&alloc, ptr4);
-    printf("Liberati 300KB da %p\n", ptr4);
+    if(ptr3 != NULL) ptr3 = BuddyAllocator_free(&alloc, ptr3);
+    else printf("Gia stata liberata questa porzione di memoria \n");
 
+    // Libera large allocation
+    if(ptr4 != NULL) ptr4 = BuddyAllocator_free(&alloc, ptr4);
+    else printf("Gia stata liberata questa porzione di memoria \n");
+
+    printf("Provo double free per large allocation -------> ");
+    // Libera large allocation
+    if(ptr4 != NULL) ptr4 = BuddyAllocator_free(&alloc, ptr4);
+    else printf("Gia stata liberata questa porzione di memoria \n");
+    
     // Libera small allocation
     BuddyAllocator_free(&alloc, ptr5);
     printf("Liberati 32 B da %p\n", ptr5);  
@@ -104,6 +114,11 @@ int main() {
     printf("Liberati 1 B da %p\n", ptr6); 
 
     // Libera small allocation
+    BuddyAllocator_free(&alloc, ptr7);
+    printf("Liberati 1023 B da %p\n", ptr7); 
+
+    // Libera small allocation
+    printf("Tentativo di double free 2\n");
     BuddyAllocator_free(&alloc, ptr7);
     printf("Liberati 1023 B da %p\n", ptr7); 
 

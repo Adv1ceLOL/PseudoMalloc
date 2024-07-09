@@ -45,11 +45,7 @@ void BuddyAllocator_init(BuddyAllocator* alloc) {
     // Creamo una BitMap con il nostro buddy allocator
     BitMap_init(&alloc->bit_map, num_bits, alloc->bitMapBuffer);
 
-    //Bitmap_print(&alloc->bit_map); 
-
-    // Inizializziamo il gestore delle allocazioni >= di 1/4 page_size
-    alloc->large_allocations = NULL;
-    
+    //Bitmap_print(&alloc->bit_map);  
     return;
 }
 
@@ -64,27 +60,16 @@ void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
     if (size == 0)return NULL;
     if (size >= SMALL_REQUEST_THRESHOLD) {
         // Large request, usiamo mmap direttamente
-        void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        void* ptr = mmap(NULL, size + sizeof(int), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
         if (ptr == MAP_FAILED) {
             printf("ERRORE: mmap di %zu bytes\n", size);
             return NULL;
         }
-
-        // Aggiungi alla lista delle allocazioni grandi
-        LargeAllocation* new_allocation = (LargeAllocation*)mmap(NULL, sizeof(LargeAllocation), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-        if (new_allocation == MAP_FAILED) {
-            printf("ERRORE: mmap memory per il LargeAllocation struct \n");
-            munmap(ptr, size); // Liberiamo la memoria precedentemente mappata per evitare problemi
-            return NULL;
-        }
-        // Aggiungiamo i dati nella nostra struct 
-        new_allocation->ptr = ptr;
-        new_allocation->size = size;
-        new_allocation->next = alloc->large_allocations;
-        alloc->large_allocations = new_allocation;
+        
+        ((int*) ptr)[0] = (int) size;
 
         printf("Allocati %zu bytes usando mmap in %p\n", size, ptr);
-        return ptr;
+        return (void *)(ptr);
     }
     else {
         // Necessitiamo di un metodo per capire il livello incui bisonga occupare blocchi
@@ -107,7 +92,7 @@ void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
 
         if (level == 0){ // Se stiamo a livello 0 (caso apparte)
             if (!BitMap_bit(&alloc->bit_map, (1 << level) - 1)){ // Controlliamo se è libero l'unico blocco
-                bloccoLibero = 0; 
+                bloccoLibero = 0;
                 trovato = 1;
             }
         }
@@ -150,13 +135,18 @@ void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size) {
 }
 
 
-void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
+void* BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
     if (ptr == NULL) return;
     printf("BuddyAllocator_free: Richiesta di liberare %p \n", ptr);
     // Controllo del puntatore: Si trova all'interno della zona di memoria del buddy allocator
     if (ptr >= (void*)alloc->memory && ptr < (void*)(alloc->memory + alloc->memory_size)) {
         // Recuperiamo l'indice del blocco memorizzato prima dell'indirizzo (quello fatto prima per il free nel malloc)
         int libero = ((int *)ptr)[-1];
+
+        if (!BitMap_bit(&alloc->bit_map, libero)){
+            printf("Questo blocco è stato gia liberato \n");
+            return;
+        }
 
         // Liberiamo tutti i figli sotto di lui (indice)
         bitSetFiglio(&alloc->bit_map, libero, 0);
@@ -169,7 +159,7 @@ void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
             else if (libero % 2) index = libero + 1; // Se libero è pari: l'index del buddy sara libero - 1
             else index = libero - 1; // Se libero è dispari: l'index del buddy sara libero + 1
 
-              /*        /
+              /*       /
                     padre
            2*i + 1 /   \ 2*i + 2
                 sx     dx
@@ -193,44 +183,22 @@ void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr) {
         Bitmap_print(&(alloc->bit_map));
         
     } else {
-        // Liberiamo la memoria allocata dalla mmap della Large request
-        LargeAllocation* current = alloc->large_allocations;
-        LargeAllocation* prev = NULL;
-        // Cerchiamo il puntatore da liberare nella lista delle LargeAllocations
-        while (current != NULL) {
-            // Se lo trova, libera la memoria e dalla lista
-            if (current->ptr == ptr) {
-                munmap(ptr, current->size);
-                printf("Liberata memoria allocata da mmap in %p\n", ptr);
+        int size = ((int *)ptr)[0];
+        printf("size = %d \n", size);
 
-                // Rimuovi dalla lista
-                if (prev == NULL) {
-                    alloc->large_allocations = current->next;
-                } else {
-                    prev->next = current->next;
-                }
-                // Liberiamo lo spazio occupato dalla struttura LargeAllocation
-                munmap(current, sizeof(LargeAllocation)); 
-                return;
-            }
-            prev = current;
-            current = current->next;
+        int ret = munmap(ptr, size + sizeof(int));
+        if(ret == -1){
+            printf("ERROR: munmap\n");
+            return NULL;
         }
-        printf("Provato a liberare un puntatore sconosciuto: %p\n", ptr);
-        return;
+        printf("%p\n", ptr);
+
+        printf("Liberata memoria allocata da mmap in %p di size = %d\n", ptr, size);
+        return NULL;
     }
 }
 
 void BuddyAllocator_destroy(BuddyAllocator *alloc) {
-    // Libera tutte le allocazioni grandi
-    LargeAllocation* current = alloc->large_allocations;
-    while (current != NULL) {
-        LargeAllocation* next = current->next;
-        munmap(current->ptr, current->size);
-        munmap(current, sizeof(LargeAllocation)); 
-        current = next;
-    } 
-
     // Svuotiamo la struct
     alloc->levels = 0;
     alloc->memory = NULL;
@@ -238,7 +206,6 @@ void BuddyAllocator_destroy(BuddyAllocator *alloc) {
     alloc->minBlock = 0;
     alloc->bitMapBuffer = NULL;
     alloc->bitMapSize = 0;
-    alloc->large_allocations = NULL;
 
     printf("BuddyAllocator destroyed\n");
 }

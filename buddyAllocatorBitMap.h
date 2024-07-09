@@ -21,12 +21,6 @@
 #define MEMORY_SIZE 1024 * 1024 // 1 MB
 #define TOTAL_BLOCKS MEMORY_SIZE / MIN_BLOCK_SIZE // Numero di blocchi
 
-typedef struct LargeAllocation { // Struct per le large allocations
-    void* ptr;
-    size_t size;
-    struct LargeAllocation* next;
-} LargeAllocation;
-
 typedef struct {
     char *memory; // Puntatore alla memoria del buddy
     size_t memory_size; // Dimensione della memoria del buddy
@@ -36,14 +30,13 @@ typedef struct {
     size_t bitMapSize; // Size dellla BitMap
     char *bitMapBuffer; // Puntatore al buffer per il BitMap
     int* blocks_per_level; // Tiene traccia dei blocchi per livello
-    LargeAllocation* large_allocations; // Puntatore alla lista delle allocazioni grandi
 } BuddyAllocator;  
 
 //! ---------------------------------------------------------------------------------------
 
 void BuddyAllocator_init(BuddyAllocator* alloc);
 void* BuddyAllocator_malloc(BuddyAllocator *alloc, size_t size);
-void BuddyAllocator_free(BuddyAllocator *alloc, void* ptr);
+void* BuddyAllocator_free(BuddyAllocator *alloc, void* ptr);
 void BuddyAllocator_destroy(BuddyAllocator *alloc);
 
 void Bitmap_print(BitMap *bitMap);
